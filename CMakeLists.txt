@@ -7,9 +7,10 @@ find_package(X11 REQUIRED)
 find_package(glog 0.6.0 REQUIRED)
 
 set(SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/")
+
 add_executable(basic-wm ${SOURCES}/main.cpp)
 
-add_library(WindowManager ${SOURCES}/wm/wm.cpp)
-target_link_libraries(basic-wm PUBLIC WindowManager glog X11) 
+add_library(WindowManager ${SOURCES}/wm/wm.cpp ${SOURCES}/wm/wm.hpp)
+target_link_libraries(basic-wm PUBLIC glog X11 WindowManager) 
 
 
