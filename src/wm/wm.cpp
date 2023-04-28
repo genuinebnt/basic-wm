@@ -32,6 +32,22 @@ void WindowManager::Run() {
 
   XSetErrorHandler(&WindowManager::OnXError);
 
+  XGrabServer(display_);
+
+  Window returned_root, returned_parent;
+  Window *top_level_windows;
+  unsigned int num_top_level_windows;
+  CHECK(XQueryTree(display_, root_, &returned_root, &returned_parent,
+                   &top_level_windows, &num_top_level_windows));
+  CHECK_EQ(returned_root, root_);
+
+  for (unsigned int i = 0; i < num_top_level_windows; ++i) {
+    Frame(top_level_windows[i], true);
+  }
+
+  XFree(top_level_windows);
+  XUngrabServer(display_);
+
   for (;;) {
     XEvent e;
     XNextEvent(display_, &e);
@@ -57,6 +73,9 @@ void WindowManager::Run() {
       break;
     case MapNotify:
       OnMapNotify(e.xmap);
+    case UnmapNotify:
+      OnUnmapNotify(e.xunmap);
+      break;
     default:
       LOG(WARNING) << "Ignored event";
     }
@@ -92,30 +111,35 @@ void WindowManager::OnConfigureRequest(const XConfigureRequestEvent &e) {
 void WindowManager::OnConfigureNotify(const XConfigureEvent &e) {}
 
 void WindowManager::OnMapRequest(const XMapRequestEvent &e) {
-  Frame(e.window);
+  Frame(e.window, false);
 
   XMapWindow(display_, e.window);
 }
 
-void WindowManager::Frame(Window w) {
+void WindowManager::Frame(Window w, bool was_created_before_window_manager) {
   const unsigned int BORDER_WIDTH = 3;
   const unsigned long BORDER_COLOR = 0xff0000;
   const unsigned long BG_COLOR = 0x0000ff;
 
-  XWindowAttributes window_attr;
-  XGetWindowAttributes(display_, w, &window_attr);
+  XWindowAttributes x_window_attrs;
+  XGetWindowAttributes(display_, w, &x_window_attrs);
+
+  if (was_created_before_window_manager) {
+    if (x_window_attrs.override_redirect ||
+        x_window_attrs.map_state != IsViewable) {
+      return;
+    }
+  }
 
   const Window frame = XCreateSimpleWindow(
-      display_, root_, window_attr.x, window_attr.y, window_attr.width,
-      window_attr.height, BORDER_WIDTH, BORDER_COLOR, BG_COLOR);
+      display_, root_, x_window_attrs.x, x_window_attrs.y, x_window_attrs.width,
+      x_window_attrs.height, BORDER_WIDTH, BORDER_COLOR, BG_COLOR);
 
   XSelectInput(display_, frame,
                SubstructureRedirectMask | SubstructureNotifyMask);
 
   XAddToSaveSet(display_, w);
-
   XReparentWindow(display_, w, frame, 0, 0);
-
   XMapWindow(display_, frame);
 
   clients_[w] = frame;
@@ -125,11 +149,38 @@ void WindowManager::Frame(Window w) {
 
 void WindowManager::OnMapNotify(const XMapEvent &e) {}
 
+void WindowManager::OnUnmapNotify(const XUnmapEvent &e) {
+  if (!clients_.count(e.window)) {
+    LOG(INFO) << "Ignore unmap notify for non-client window " << e.window;
+    return;
+  }
+
+  if (e.event == root_) {
+    LOG(INFO) << "Ignore UnmapNotify for reparented pre-existing window "
+              << e.window;
+    return;
+  }
+
+  Unframe(e.window);
+}
+
+void WindowManager::Unframe(Window w) {
+  const Window frame = clients_[w];
+
+  XUnmapWindow(display_, frame);
+  XReparentWindow(display_, w, root_, 0, 0);
+  XRemoveFromSaveSet(display_, w);
+  XDestroyWindow(display_, frame);
+
+  clients_.erase(w);
+
+  LOG(INFO) << "Unframed Window " << w << " [" << frame << "]";
+}
+
 void WindowManager::OnReparentNotify(const XReparentEvent &e) {}
 
 int WindowManager::OnWMDectected(Display *display, XErrorEvent *e) {
   CHECK_EQ(static_cast<int>(e->error_code), BadAccess);
-
   wm_detected_ = true;
 
   return 0;
